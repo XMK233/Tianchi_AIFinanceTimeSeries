@@ -5,7 +5,7 @@ from matplotlib.font_manager import FontProperties
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-sys.path.append("../../")
+sys.path.append("../")
 
 random.seed(618)
 np.random.seed(907)
@@ -14,7 +14,7 @@ tqdm.tqdm.pandas() ## 引入这个，就可以在apply的时候用progress_apply
 
 # sys.path.append("../../../")
 new_base_path = os.path.join(
-    "/Users/minkexiu/Downloads",
+    "/mnt/d/forCoding_data/",
     "/".join(
         os.getcwd().split("/")[-1*(len(sys.path[-1].split("/")) - 1):]
     ),
