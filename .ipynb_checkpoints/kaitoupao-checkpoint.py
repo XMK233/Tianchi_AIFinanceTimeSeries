@@ -267,7 +267,7 @@ def three_num_get_gua(a, b, c):
 def easy_start_gua():
     """用公历的日、时、分来起卦。"""
     n1, n2, n3 = str(datetime.now())[8:10], str(datetime.now())[11:13], str(datetime.now())[14:16]
-    print(n1, n2, n3)
+    print("公历", n1, n2, n3)
     return three_num_get_gua(int(n1), int(n2), int(n3))
 easy_start_gua()
 
@@ -275,17 +275,18 @@ def easy_start_gua_lunar():
     '''用农历的月、日、时辰来起卦。'''
     time_now = datetime.now()
     zh_date_str = str(zhdate.ZhDate.from_datetime(time_now))
-    zh_date_str_1 = datetime.strftime(
-        datetime(
-            *[int(x) for x in re.findall("\d+", zh_date_str)]
-        ),
-        '%Y-%m-%d'
-    )
+    zh_date_str_1 = [int(x) for x in re.findall("\d+", zh_date_str)]
+    # zh_date_str_1 = datetime.strftime(
+    #     datetime(
+    #         *[int(x) for x in re.findall("\d+", zh_date_str)]
+    #     ),
+    #     '%Y-%m-%d'
+    # )
     zh_hour = (time_now.hour + 1)//2%12+1
     zh_hour_dizhi = "子、丑、寅、卯、辰、巳、午、未、申、酉、戌、亥".split("、")[zh_hour-1]
     
-    n1, n2, n3 = zh_date_str_1[5:7], zh_date_str_1[8:10], zh_hour
-    print(n1, n2, n3, f"{zh_hour_dizhi}时")
+    n1, n2, n3 = zh_date_str_1[1], zh_date_str_1[2], zh_hour
+    print("农历", n1, n2, n3, f"{zh_hour_dizhi}时")
     return three_num_get_gua(int(n1), int(n2), int(n3))
 easy_start_gua_lunar()
 

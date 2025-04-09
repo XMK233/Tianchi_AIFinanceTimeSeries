@@ -147,11 +147,11 @@ def create_trained_models_path(filename_or_path):
 
 def run_finish():
     # 假设你的字体文件是 'myfont.ttf' 并且位于当前目录下  
-    font = FontProperties(fname="/Users/minkexiu/Documents/GitHub/ML_Tryout/SimHei.ttf", size=24)  
+    font = FontProperties(fname="/mnt/d/forCoding_code/SimHei.ttf", size=24)  
     # 创建一个空白的图形  
     fig, ax = plt.subplots()  
     ax.imshow(
-        plt.imread("/Users/minkexiu/Downloads/wallhaven-dgxpyg.jpg")
+        plt.imread("/mnt/d/pictures/壁纸/wallhaven-r2p13q.jpg")
     )
     # 在图形中添加文字  
     ax.text(
