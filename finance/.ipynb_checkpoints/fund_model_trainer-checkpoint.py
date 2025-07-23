@@ -14,7 +14,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import warnings
 warnings.filterwarnings('ignore')
-import tqdm 
 
 class DNNRegressor(nn.Module):
     def __init__(self, input_size, hidden_sizes=[128, 64, 32], dropout_rate=0.2):
@@ -37,35 +36,40 @@ class DNNRegressor(nn.Module):
         return self.network(x)
 
 class FundModelTrainer:
-    def __init__(self, features_df, target_days=10):
+    def __init__(self, features_df, target_col='future_return_10d'):
         self.features_df = features_df
-        self.target_days = target_days
-        self.target_col = f'future_return_{target_days}d'
+        self.target_col = target_col
         self.feature_cols = None
         self.scaler = None
         self.models = {}
         self.results = {}
-
+        
     def prepare_data(self):
-        exclude_cols = ['date', 'nav', 'daily_return']
-        for d in [1, 5, 10, 30]:
-            exclude_cols += [f'future_return_{d}d', f'future_return_{d}d_binary', f'future_return_{d}d_category']
+        exclude_cols = ['date', 'nav', 'daily_return',
+                       'future_return_10d', 'future_return_10d_binary', 'future_return_10d_category']
+        
         self.feature_cols = [col for col in self.features_df.columns if col not in exclude_cols]
         self.X = self.features_df[self.feature_cols].copy()
         self.y = self.features_df[self.target_col].copy()
+        
+        # 处理无穷大和NaN值
         self.X = self.X.replace([np.inf, -np.inf], np.nan)
         self.X = self.X.fillna(self.X.median())
+        
         print(f"数据形状: {self.X.shape}")
         return self.X, self.y
-
+    
     def scale_features(self, scaler_type='standard'):
         if scaler_type == 'standard':
             self.scaler = StandardScaler()
+        
         self.X_scaled = self.scaler.fit_transform(self.X)
         return self.X_scaled
-
-    def train_with_expanding_window(self):
-        print("使用递增窗口训练模型...")
+    
+    def train_with_rolling_window(self, window_size=252, step_size=7):
+        """使用滚动窗口训练模型"""
+        print("使用滚动窗口训练模型...")
+        
         models = {
             'Linear Regression': LinearRegression(),
             'Ridge Regression': Ridge(alpha=1.0),
@@ -73,51 +77,64 @@ class FundModelTrainer:
             'LightGBM': lgb.LGBMRegressor(n_estimators=100, random_state=42, verbose=-1),
             'XGBoost': xgb.XGBRegressor(n_estimators=100, random_state=42)
         }
+        
+        # DNN模型
+        dnn_model = DNNRegressor(input_size=len(self.feature_cols))
+        models['DNN'] = dnn_model
+        
+        # 初始化结果存储
         for name in models.keys():
             self.results[name] = {
-                'val_scores': [], 'predictions': [], 'actuals': []
+                'train_scores': [], 'val_scores': [], 'predictions': [], 'actuals': []
             }
-        n = len(self.X_scaled)
-        for i in tqdm.tqdm(range(1, n)):
-            if i < 100:
-                continue  # 训练集小于100时跳过
-            X_train = self.X_scaled[:i]
-            y_train = self.y.iloc[:i]
-            X_test = self.X_scaled[i:i+1]
-            y_test = self.y.iloc[i:i+1]
+        
+        # 滚动窗口训练
+        for i in range(window_size, len(self.X_scaled) - 10, step_size):
+            # 训练集：前window_size个样本
+            X_train = self.X_scaled[i-window_size:i]
+            y_train = self.y.iloc[i-window_size:i]
+            
+            # 验证集：下一个step_size个样本
+            val_end = min(i + step_size, len(self.X_scaled) - 10)
+            X_val = self.X_scaled[i:val_end]
+            y_val = self.y.iloc[i:val_end]
+            
+            # 训练模型
             for name, model in models.items():
-                model.fit(X_train, y_train)
-                y_pred = model.predict(X_test)
-                val_score = r2_score(y_test, y_pred)
-                self.results[name]['val_scores'].append(val_score)
-                self.results[name]['predictions'].extend(y_pred)
-                self.results[name]['actuals'].extend(y_test.values)
-                self.models[name] = model
+                if name == 'DNN':
+                    # DNN训练
+                    self._train_dnn(model, X_train, y_train, X_val, y_val, name)
+                else:
+                    # 传统模型训练
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_val)
+                    train_score = r2_score(y_train, model.predict(X_train))
+                    val_score = r2_score(y_val, y_pred)
+                    
+                    self.results[name]['train_scores'].append(train_score)
+                    self.results[name]['val_scores'].append(val_score)
+                    self.results[name]['predictions'].extend(y_pred)
+                    self.results[name]['actuals'].extend(y_val.values)
+                    self.models[name] = model
+        
+        # 计算平均性能
         for name in models.keys():
+            avg_train_score = np.mean(self.results[name]['train_scores'])
             avg_val_score = np.mean(self.results[name]['val_scores'])
             mae = mean_absolute_error(self.results[name]['actuals'], self.results[name]['predictions'])
             rmse = np.sqrt(mean_squared_error(self.results[name]['actuals'], self.results[name]['predictions']))
+            
+            self.results[name]['avg_train_score'] = avg_train_score
             self.results[name]['avg_val_score'] = avg_val_score
             self.results[name]['mae'] = mae
             self.results[name]['rmse'] = rmse
+        
         return self.results
-
-    def train_dnn(self, epochs=50, batch_size=32, lr=0.001):
-        """单独训练DNN模型"""
-        print("训练DNN模型...")
-        
-        # 创建DNN模型
-        dnn_model = DNNRegressor(input_size=len(self.feature_cols))
-        
-        # 使用最后80%的数据训练，20%验证
-        split_idx = int(len(self.X_scaled) * 0.8)
-        X_train = self.X_scaled[:split_idx]
-        y_train = self.y.iloc[:split_idx]
-        X_val = self.X_scaled[split_idx:]
-        y_val = self.y.iloc[split_idx:]
-        
+    
+    def _train_dnn(self, model, X_train, y_train, X_val, y_val, name):
+        """训练DNN模型"""
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        dnn_model = dnn_model.to(device)
+        model = model.to(device)
         
         # 转换为tensor
         X_train_tensor = torch.FloatTensor(X_train).to(device)
@@ -127,56 +144,38 @@ class FundModelTrainer:
         
         # 数据加载器
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         
         # 优化器和损失函数
-        optimizer = optim.Adam(dnn_model.parameters(), lr=lr)
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
         criterion = nn.MSELoss()
         
         # 训练
-        dnn_model.train()
-        for epoch in range(epochs):
-            total_loss = 0
+        model.train()
+        for epoch in range(50):
             for batch_X, batch_y in train_loader:
                 optimizer.zero_grad()
-                outputs = dnn_model(batch_X).squeeze()
+                outputs = model(batch_X).squeeze()
                 loss = criterion(outputs, batch_y)
                 loss.backward()
                 optimizer.step()
-                total_loss += loss.item()
-            
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.6f}")
         
         # 预测
-        dnn_model.eval()
+        model.eval()
         with torch.no_grad():
-            train_pred = dnn_model(X_train_tensor).squeeze().cpu().numpy()
-            val_pred = dnn_model(X_val_tensor).squeeze().cpu().numpy()
+            train_pred = model(X_train_tensor).squeeze().cpu().numpy()
+            val_pred = model(X_val_tensor).squeeze().cpu().numpy()
         
         # 计算分数
         train_score = r2_score(y_train, train_pred)
         val_score = r2_score(y_val, val_pred)
-        mae = mean_absolute_error(y_val, val_pred)
-        rmse = np.sqrt(mean_squared_error(y_val, val_pred))
         
         # 存储结果
-        self.results['DNN'] = {
-            'train_scores': [train_score],
-            'val_scores': [val_score],
-            'predictions': val_pred.tolist(),
-            'actuals': y_val.values.tolist(),
-            'avg_train_score': train_score,
-            'avg_val_score': val_score,
-            'mae': mae,
-            'rmse': rmse
-        }
-        self.models['DNN'] = dnn_model
-        
-        print(f"DNN训练完成 - 验证集R²: {val_score:.4f}, MAE: {mae:.4f}")
-        return dnn_model
-    
-
+        self.results[name]['train_scores'].append(train_score)
+        self.results[name]['val_scores'].append(val_score)
+        self.results[name]['predictions'].extend(val_pred)
+        self.results[name]['actuals'].extend(y_val.values)
+        self.models[name] = model
     
     def evaluate_models(self):
         print("\n=== 模型评估结果 ===")
@@ -185,6 +184,7 @@ class FundModelTrainer:
         for name, results in self.results.items():
             eval_results.append({
                 'Model': name,
+                'Avg Train R²': results['avg_train_score'],
                 'Avg Val R²': results['avg_val_score'],
                 'MAE': results['mae'],
                 'RMSE': results['rmse']
@@ -226,7 +226,7 @@ class FundModelTrainer:
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(f'{model_name}_predictions_{self.target_days}d.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'{model_name}_predictions.png', dpi=300, bbox_inches='tight')
         plt.show()
     
     def predict_future(self, model_name, latest_features):
@@ -254,29 +254,39 @@ class FundModelTrainer:
         return prediction[0] if hasattr(prediction, '__len__') else prediction
     
     def save_model(self, model_name):
-        import pickle
-        filename = f"{model_name.replace(' ', '_').lower()}_model_{self.target_days}d.pkl"
-        with open(filename, 'wb') as f:
-            pickle.dump(self.models[model_name], f)
+        if model_name == 'DNN':
+            filename = f"{model_name.lower()}_model.pth"
+            torch.save(self.models[model_name].state_dict(), filename)
+        else:
+            import pickle
+            filename = f"{model_name.replace(' ', '_').lower()}_model.pkl"
+            with open(filename, 'wb') as f:
+                pickle.dump(self.models[model_name], f)
         print(f"模型已保存: {filename}")
         return filename
 
 def main():
     from fund_feature_generator import FundFeatureGenerator
+    
     generator = FundFeatureGenerator(fund_code="004746")
-    features_df = generator.generate_all_features(target_days=10)  # 这里target_days只影响默认生成，实际可选
-    # 你可以改成1/5/10/30
-    trainer = FundModelTrainer(features_df, target_days=10)
+    features_df = generator.generate_all_features(target_days=10)
+    
+    trainer = FundModelTrainer(features_df)
     X, y = trainer.prepare_data()
     X_scaled = trainer.scale_features()
-    results = trainer.train_with_expanding_window()
+    results = trainer.train_with_rolling_window()
+    
     eval_df = trainer.evaluate_models()
+    
     best_model = eval_df.iloc[0]['Model']
     trainer.plot_predictions(best_model)
+    
     latest_data = features_df.iloc[-1:][trainer.feature_cols]
     future_prediction = trainer.predict_future(best_model, latest_data)
-    print(f"未来{trainer.target_days}天收益率预测: {future_prediction:.4f} ({future_prediction*100:.2f}%)")
+    print(f"未来10天收益率预测: {future_prediction:.4f} ({future_prediction*100:.2f}%)")
+    
     trainer.save_model(best_model)
+    
     return trainer, eval_df
 
 if __name__ == "__main__":

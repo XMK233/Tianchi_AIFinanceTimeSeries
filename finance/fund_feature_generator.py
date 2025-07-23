@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
+from tqdm import tqdm
 
 class FundFeatureGenerator:
     """
@@ -236,7 +237,10 @@ class FundFeatureGenerator:
         fund_data = self.calculate_statistical_features(fund_data)
         fund_data = self.calculate_time_features(fund_data)
         fund_data = self.calculate_market_features(fund_data, market_data)
-        fund_data = self.create_target_variable(fund_data, target_days)
+        
+        # 生成多种future_return
+        for days in [1, 5, 10, 30]:
+            fund_data = self.create_target_variable(fund_data, target_days=days)
         
         initial_rows = len(fund_data)
         fund_data = fund_data.dropna()

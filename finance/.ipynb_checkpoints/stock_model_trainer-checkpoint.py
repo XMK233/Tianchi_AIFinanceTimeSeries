@@ -14,14 +14,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import warnings
 warnings.filterwarnings('ignore')
-import tqdm 
+import tqdm
 
 class DNNRegressor(nn.Module):
     def __init__(self, input_size, hidden_sizes=[128, 64, 32], dropout_rate=0.2):
         super(DNNRegressor, self).__init__()
         layers = []
         prev_size = input_size
-        
         for hidden_size in hidden_sizes:
             layers.extend([
                 nn.Linear(prev_size, hidden_size),
@@ -29,14 +28,12 @@ class DNNRegressor(nn.Module):
                 nn.Dropout(dropout_rate)
             ])
             prev_size = hidden_size
-        
         layers.append(nn.Linear(prev_size, 1))
         self.network = nn.Sequential(*layers)
-    
     def forward(self, x):
         return self.network(x)
 
-class FundModelTrainer:
+class StockModelTrainer:
     def __init__(self, features_df, target_days=10):
         self.features_df = features_df
         self.target_days = target_days
@@ -47,9 +44,9 @@ class FundModelTrainer:
         self.results = {}
 
     def prepare_data(self):
-        exclude_cols = ['date', 'nav', 'daily_return']
+        exclude_cols = ['date', 'close', 'open', 'high', 'low', 'volume', 'amount', 'pct_chg', 'turnover_rate']
         for d in [1, 5, 10, 30]:
-            exclude_cols += [f'future_return_{d}d', f'future_return_{d}d_binary', f'future_return_{d}d_category']
+            exclude_cols += [f'future_return_{d}d', f'future_return_{d}d_binary']
         self.feature_cols = [col for col in self.features_df.columns if col not in exclude_cols]
         self.X = self.features_df[self.feature_cols].copy()
         self.y = self.features_df[self.target_col].copy()
@@ -103,37 +100,23 @@ class FundModelTrainer:
         return self.results
 
     def train_dnn(self, epochs=50, batch_size=32, lr=0.001):
-        """单独训练DNN模型"""
         print("训练DNN模型...")
-        
-        # 创建DNN模型
         dnn_model = DNNRegressor(input_size=len(self.feature_cols))
-        
-        # 使用最后80%的数据训练，20%验证
         split_idx = int(len(self.X_scaled) * 0.8)
         X_train = self.X_scaled[:split_idx]
         y_train = self.y.iloc[:split_idx]
         X_val = self.X_scaled[split_idx:]
         y_val = self.y.iloc[split_idx:]
-        
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         dnn_model = dnn_model.to(device)
-        
-        # 转换为tensor
         X_train_tensor = torch.FloatTensor(X_train).to(device)
         y_train_tensor = torch.FloatTensor(y_train.values).to(device)
         X_val_tensor = torch.FloatTensor(X_val).to(device)
         y_val_tensor = torch.FloatTensor(y_val.values).to(device)
-        
-        # 数据加载器
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        
-        # 优化器和损失函数
         optimizer = optim.Adam(dnn_model.parameters(), lr=lr)
         criterion = nn.MSELoss()
-        
-        # 训练
         dnn_model.train()
         for epoch in range(epochs):
             total_loss = 0
@@ -144,23 +127,16 @@ class FundModelTrainer:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            
             if (epoch + 1) % 10 == 0:
                 print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.6f}")
-        
-        # 预测
         dnn_model.eval()
         with torch.no_grad():
             train_pred = dnn_model(X_train_tensor).squeeze().cpu().numpy()
             val_pred = dnn_model(X_val_tensor).squeeze().cpu().numpy()
-        
-        # 计算分数
         train_score = r2_score(y_train, train_pred)
         val_score = r2_score(y_val, val_pred)
         mae = mean_absolute_error(y_val, val_pred)
         rmse = np.sqrt(mean_squared_error(y_val, val_pred))
-        
-        # 存储结果
         self.results['DNN'] = {
             'train_scores': [train_score],
             'val_scores': [val_score],
@@ -172,15 +148,11 @@ class FundModelTrainer:
             'rmse': rmse
         }
         self.models['DNN'] = dnn_model
-        
         print(f"DNN训练完成 - 验证集R²: {val_score:.4f}, MAE: {mae:.4f}")
         return dnn_model
-    
 
-    
     def evaluate_models(self):
         print("\n=== 模型评估结果 ===")
-        
         eval_results = []
         for name, results in self.results.items():
             eval_results.append({
@@ -189,33 +161,25 @@ class FundModelTrainer:
                 'MAE': results['mae'],
                 'RMSE': results['rmse']
             })
-        
         eval_df = pd.DataFrame(eval_results)
         eval_df = eval_df.sort_values('Avg Val R²', ascending=False)
         print(eval_df.round(4))
-        
         return eval_df
-    
+
     def plot_predictions(self, model_name):
         if model_name not in self.results:
             print(f"模型 {model_name} 不存在")
             return
-        
         results = self.results[model_name]
-        
         plt.figure(figsize=(15, 5))
-        
-        # 预测 vs 实际值
         plt.subplot(1, 2, 1)
         plt.scatter(results['actuals'], results['predictions'], alpha=0.6)
-        plt.plot([min(results['actuals']), max(results['actuals'])], 
+        plt.plot([min(results['actuals']), max(results['actuals'])],
                 [min(results['actuals']), max(results['actuals'])], 'r--', lw=2)
         plt.xlabel('实际值')
         plt.ylabel('预测值')
         plt.title(f'{model_name} - 预测 vs 实际值')
         plt.grid(True, alpha=0.3)
-        
-        # 时间序列预测结果
         plt.subplot(1, 2, 2)
         plt.plot(results['actuals'], label='实际值', alpha=0.7)
         plt.plot(results['predictions'], label='预测值', alpha=0.7)
@@ -224,24 +188,20 @@ class FundModelTrainer:
         plt.title(f'{model_name} - 时间序列预测结果')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
         plt.tight_layout()
         plt.savefig(f'{model_name}_predictions_{self.target_days}d.png', dpi=300, bbox_inches='tight')
         plt.show()
-    
+
     def predict_future(self, model_name, latest_features):
         if model_name not in self.models:
             print(f"模型 {model_name} 不存在")
             return None
-        
         model = self.models[model_name]
         latest_features = latest_features[self.feature_cols]
-        
         if hasattr(self, 'scaler'):
             latest_features_scaled = self.scaler.transform(latest_features)
         else:
             latest_features_scaled = latest_features
-        
         if model_name == 'DNN':
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model.eval()
@@ -250,9 +210,8 @@ class FundModelTrainer:
                 prediction = model(X_tensor).squeeze().cpu().numpy()
         else:
             prediction = model.predict(latest_features_scaled)
-        
         return prediction[0] if hasattr(prediction, '__len__') else prediction
-    
+
     def save_model(self, model_name):
         import pickle
         filename = f"{model_name.replace(' ', '_').lower()}_model_{self.target_days}d.pkl"
@@ -262,11 +221,11 @@ class FundModelTrainer:
         return filename
 
 def main():
-    from fund_feature_generator import FundFeatureGenerator
-    generator = FundFeatureGenerator(fund_code="004746")
-    features_df = generator.generate_all_features(target_days=10)  # 这里target_days只影响默认生成，实际可选
-    # 你可以改成1/5/10/30
-    trainer = FundModelTrainer(features_df, target_days=10)
+    from stock_feature_generator import StockFeatureGenerator
+    stock_code = "600519"  # 茅台示例
+    generator = StockFeatureGenerator(stock_code)
+    features_df = generator.generate_all_features()
+    trainer = StockModelTrainer(features_df, target_days=10)
     X, y = trainer.prepare_data()
     X_scaled = trainer.scale_features()
     results = trainer.train_with_expanding_window()
